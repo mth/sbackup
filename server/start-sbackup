@@ -1,0 +1,84 @@
+#!/bin/bash
+
+set -e
+
+BACKUP_DIR=/mnt
+MAX_AGE=30
+REMOTE_COMMAND=reverse-sshfs-backup
+SUID=65534
+SGID=65534
+
+HELP="`cat <<HELP
+$0 options... [CONNECT-COMMAND...]
+  -h help
+  -dir BACKUP-DIRECTORY
+     Default is $BACKUP_DIR
+  -rot IMAGE-NAME
+     Rotates the image (keeping older backups)
+  -age DAYS
+     Time to keep older backups (default is $MAX_AGE)
+  -uid USER for sftp server (default is $SUID)
+  -gid GROUP for sftp server (default is $SGID)
+  -ssh USER@HOST
+     Either this or CONNECT-COMMAND must be given
+HELP
+`"
+error() {
+	echo "$1"
+	exit 1
+}
+
+unset REMOTE_HOST ROTATE_PREFIX SUID SGID
+OPT=shift
+while [ -n "$OPT" ]; do
+	case "$1" in
+	-h) echo "$HELP"; exit 0;;
+	-age) MAX_AGE="$2";;
+	-dir) BACKUP_DIR="$2";;
+	-rot) ROTATE_PREFIX="$2";;
+	-ssh) REMOTE_HOST="$2";;
+	-gid) SGID="$2";;
+	-uid) SUID="$2";;
+	*) OPT="";;
+	esac
+	$OPT
+	$OPT
+done
+
+if [ -n "$REMOTE_HOST" ]; then
+	sshCommand=(ssh -o BatchMode=yes -T "$@" "$REMOTE_HOST" "$REMOTE_COMMAND")
+elif [ $# -ne 0 ]; then
+	sshCommand=("$@")
+else
+	error "$HELP"
+fi
+
+[ -d "$BACKUP_DIR" ] || error "No backup directory $BACKUP_DIR"
+ACTIVE_DIR="$BACKUP_DIR${ROTATE_PREFIX:+/active}"
+
+remove_active() {
+	rm -f "$ACTIVE_DIR/$ROTATE_PREFIX" 2>/dev/null
+}
+
+if [ -n "$ROTATE_PREFIX" ]; then
+	mkdir -p "$ACTIVE_DIR"
+	remove_active
+	cp --reflink "$BACKUP_DIR/$ROTATE_PREFIX" "$ACTIVE_DIR/"
+	chown "$SUID:$SGID" "$ACTIVE_DIR/$ROTATE_PREFIX"
+	trap remove_active EXIT
+fi
+
+COPROC_PID=""
+SFTP_BLACKLIST="mkdir,rmdir,remove,symlink,hardlink,rename,posix-rename"
+coproc "${sshCommand[@]}"
+LD_PRELOAD=/usr/lib/prechroot.so PRECHROOT="$SUID $SGID $ACTIVE_DIR" \
+	/usr/lib/sftp-server -d / -f DAEMON -P "$SFTP_BLACKLIST" \
+	<&${COPROC[0]} >&${COPROC[1]}
+
+if [ -n "$ROTATE_PREFIX" ]; then
+	find "$BACKUP_DIR" -maxdepth 0 -type f \
+		-name "$ROTATE_PREFIX.*" -mtime "+$MAX_AGE" -delete
+	ln -f "$BACKUP_DIR/$ROTATE_PREFIX" \
+	   "$BACKUP_DIR/$ROTATE_PREFIX.`date '+%d-%m-%Y'`"
+	mv -f "$ACTIVE_DIR/$ROTATE_PREFIX" "$BACKUP_DIR/"
+fi

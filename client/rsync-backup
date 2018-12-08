@@ -1,0 +1,46 @@
+#!/bin/sh
+
+set -e
+
+error() {
+	echo "$1" >&2
+	exit 1
+}
+
+unset BACKUP_TARGET_DIR
+RSYNC_COMMAND=/usr/bin/rsync
+BACKUP_DIRS=''
+EXCLUDE_DIRS='/dev /media /mnt /proc /run /sys /tmp /var/tmp'
+RSYNC_OPTIONS='--stats --del --numeric-ids -aHSx'
+
+[ -f /etc/sbackup/sbackup.conf ] || error 'missing /etc/sbackup/sbackup.conf'
+. /etc/sbackup/sbackup.conf
+
+[ "$BACKUP_DIRS" != '' ] || error "BACKUP_DIRS is not set"
+[ "$BACKUP_TARGET_DIR" != '' ] || error "BACKUP_TARGET_DIR is not set"
+
+export PATH
+
+do_rsync() {
+  echo
+  echo "Starting $1 backup."
+  date
+  /bin/mkdir -p "$BACKUP_TARGET_DIR$1"
+  RS_XTRA_OPTS="$RSYNC_OPTIONS --exclude=$1/lost+found"
+  for RS_EXCLUDE_DIR in $EXCLUDE_DIRS; do
+    case "$RS_EXCLUDE_DIR" in
+    "$1"*) RS_XTRA_OPTS="$RS_XTRA_OPTS --exclude=$RS_EXCLUDE_DIR";;
+    esac
+  done
+  if "$RSYNC_COMMAND" $RS_XTRA_OPTS "$1" "$BACKUP_TARGET_DIR/`dirname "$1"`/"
+  then echo "$1 backup done."
+  else echo "$1 backup failed with $?."
+  fi
+}
+
+for CUR_BACKUP_DIR in $BACKUP_DIRS; do
+  do_rsync "$CUR_BACKUP_DIR"
+done
+
+/bin/sync
+echo 'All backup done.'

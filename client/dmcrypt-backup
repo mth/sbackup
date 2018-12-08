@@ -1,0 +1,77 @@
+#!/bin/sh
+
+set -e
+
+unset REMOTE_MOUNT_DIR BACKUP_TARGET_DIR CRYPTSETUP_KEY
+UPDATE_BACKUP_COMMAND='/etc/sbackup/rsync-backup'
+ENCRYPTED_IMAGE_NAME='image'
+ENCRYPTED_IMAGE=''
+BACKUP_MOUNT_OPTIONS='nobarrier,noatime,journal_checksum'
+CRYPT_DEVICE='backup'
+LOOP_DEV='/dev/loop7'
+
+error() {
+	echo "$1" >&2
+	exit 1
+}
+
+[ -f /etc/sbackup/sbackup.conf ] || error 'Missing /etc/sbackup/sbackup.conf'
+. /etc/sbackup/sbackup.conf
+
+[ -d "$REMOTE_MOUNT_DIR" ] || \
+	error "Missing REMOTE_MOUNT_DIR ($REMOTE_MOUNT_DIR)"
+[ -d "$BACKUP_TARGET_DIR" ] || \
+	error "Missing BACKUP_TARGET_DIR ($BACKUP_TARGET_DIR)"
+[ -f "$CRYPTSETUP_KEY" ] \
+	|| error "Key '$CRYPTSETUP_KEY' is unavailable (CRYPTSETUP_KEY)"
+
+export PATH HOME LANG
+unset LD_PRELOAD
+
+if [ "$ENCRYPTED_IMAGE" = "" ]; then
+	[ "$REMOTE_MOUNT_DIR" != "" ] || error 'REMOTE_MOUNT_DIR not set'
+	ENCRYPTED_IMAGE="$REMOTE_MOUNT_DIR/$ENCRYPTED_IMAGE_NAME"
+fi
+
+CLEANUP_UMOUNT=true
+CLEANUP_CRYPT=true
+
+cleanup_crypt_mount() {
+        $CLEANUP_UMOUNT "$BACKUP_TARGET_DIR"
+	$CLEANUP_CRYPT remove "$CRYPT_DEVICE"
+	sync
+	sleep 0.5
+	losetup -d "$LOOP_DEV"
+}
+
+# Ensure that the backup is unmounted
+while umount "$BACKUP_TARGET_DIR" 2>/dev/null; do
+        echo "$BACKUP_TARGET_DIR was mounted!" >&2
+done
+
+! grep " $BACKUP_TARGET_DIR " /proc/mounts \
+	|| error "Could not unmount $BACKUP_TARGET_DIR, exiting!"
+
+# Ensure that the cryptsetup device is inactive
+! cryptsetup remove "$CRYPT_DEVICE" >&2 \
+	|| echo "backup mapper $CRYPT_DEVICE was active" >&2
+! losetup -d "$LOOP_DEV" 2>/dev/null || echo "$LOOP_DEV was setup!" >&2
+
+losetup "$LOOP_DEV" "$ENCRYPTED_IMAGE" || error "Could not setup $LOOP_DEV"
+trap cleanup_crypt_mount EXIT
+
+cryptsetup open -d "$CRYPTSETUP_KEY" "$LOOP_DEV" "$CRYPT_DEVICE" \
+	|| error "Could not create dm-crypt mapper"
+CLEANUP_CRYPT=cryptsetup
+
+set +e
+e2fsck -y "/dev/mapper/$CRYPT_DEVICE"
+FSCK_ERR=$?
+[ $FSCK_ERR -le 2 ] || error "Backup fsck failed with exit code $FSCK_ERR."
+set -e
+
+mount -t ext4 -o "$BACKUP_MOUNT_OPTIONS" \
+	"/dev/mapper/$CRYPT_DEVICE" "$BACKUP_TARGET_DIR"
+CLEANUP_UMOUNT=umount
+
+$UPDATE_BACKUP_COMMAND || error "Updating backup image failed ($?)"
