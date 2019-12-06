@@ -12,6 +12,7 @@ RSYNC_COMMAND=/usr/bin/rsync
 BACKUP_DIRS=''
 EXCLUDE_DIRS='/dev /media /mnt /proc /run /sys /tmp /var/tmp'
 RSYNC_OPTIONS='--stats --del --numeric-ids -aHSx'
+RSYNC_BACKUP_NOTICE='/var/backups/sbackup.finished'
 
 [ -f /etc/sbackup/sbackup.conf ] || error 'missing /etc/sbackup/sbackup.conf'
 . /etc/sbackup/sbackup.conf
@@ -44,3 +45,4 @@ done
 
 /bin/sync
 echo 'All backup done.'
+/bin/date '+%Y-%m-%dT%H:%M:%S' > "$RSYNC_BACKUP_NOTICE"
