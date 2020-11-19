@@ -11,17 +11,18 @@ set -e
 unset REMOTE_MOUNT_DIR
 REVERSE_PIPE_COMMAND='/etc/sbackup/reverse-pipe'
 BACKUP_COMMAND='/etc/sbackup/dmcrypt-backup'
+LOG_FACILITY=daemon
 
 alias log='/usr/bin/logger "--id=$$" -t reverse-sshfs-backup'
 
 error() {
 	echo "$1"
-	log -p daemon.err "$1"
+	log -p "$LOG_FACILITY.err" "$1"
 	exit 1
 }
 
 cleanup_remote_umount() {
-	fusermount -u "$REMOTE_MOUNT_DIR" 2>&1 | log -p daemon.err
+	fusermount -u "$REMOTE_MOUNT_DIR" 2>&1 | log -p "$LOG_FACILITY.err"
 }
 
 [ -f /etc/sbackup/sbackup.conf ] || error 'missing /etc/sbackup/sbackup.conf'
@@ -30,17 +31,17 @@ cleanup_remote_umount() {
 export PATH
 
 ! fusermount -u "$REMOTE_MOUNT_DIR" >/dev/null 2>&1 \
-	|| log -p daemon.err "$REMOTE_MOUNT_DIR was mounted"
+	|| log -p "$LOG_FACILITY.err" "$REMOTE_MOUNT_DIR was mounted"
 [ -d "$REMOTE_MOUNT_DIR" ] || \
 	error "Missing REMOTE_MOUNT_DIR ($REMOTE_MOUNT_DIR)"
 [ -x "$BACKUP_COMMAND" ] || \
 	error "BACKUP_COMMAND ($BACKUP_COMMAND) is not executable"
 
 sshfs -o "nodev,noexec,ssh_command=$REVERSE_PIPE_COMMAND" "3.4@$$:" \
-	"$REMOTE_MOUNT_DIR" 2>&1 | log -p daemon.err
+	"$REMOTE_MOUNT_DIR" 2>&1 | log -p "$LOG_FACILITY.err"
 
 trap cleanup_remote_umount EXIT
 exec 3<&- 4>&-
 
-$BACKUP_COMMAND 2>&1 | log -p daemon.notice || \
+$BACKUP_COMMAND 2>&1 | log -p "$LOG_FACILITY.notice" || \
 	error "$BACKUP_COMMAND failed with exit code $?"
